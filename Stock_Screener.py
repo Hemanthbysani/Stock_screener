@@ -142,18 +142,16 @@ def generate_trading_signals(stock_data):
         return pd.Series(0, index=stock_data.index)
 
 def generate_trading_signals_with_ml(stock_data):
-    """Generate trading signals using a stacking ensemble of powerful models with bias mitigation."""
+    """Generate trading signals using a CatBoostClassifier only."""
     try:
-        # Align features and target in a single DataFrame.
-        df = pd.DataFrame(index=stock_data.index)
-        
         # Ensure indicators are available.
         if 'MACD' not in stock_data.columns or 'RSI' not in stock_data.columns:
             stock_data = calculate_indicators(stock_data)
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
         
-        # Build features
+        # Build feature DataFrame.
+        df = pd.DataFrame(index=stock_data.index)
         df['MACD'] = stock_data['MACD']
         df['RSI'] = stock_data['RSI']
         df['Close'] = stock_data['Close']
@@ -164,13 +162,13 @@ def generate_trading_signals_with_ml(stock_data):
         df['Fib_0.618'] = stock_data['Fib_0.618']
         df['Fib_0.382'] = stock_data['Fib_0.382']
         
-        # Primary signals (the "core" indicators)
+        # Primary signals
         df['macd_buy'] = stock_data['MACD'] > stock_data['Signal_Line']
         df['macd_sell'] = stock_data['MACD'] < stock_data['Signal_Line']
         df['vwap_buy'] = stock_data['Close'] > stock_data['VWAP']
         df['vwap_sell'] = stock_data['Close'] < stock_data['VWAP']
         
-        # Secondary signals (optional confirmations)
+        # Secondary signals
         df['rsi_buy'] = stock_data['RSI'] < 30  
         df['rsi_sell'] = stock_data['RSI'] > 70  
         df['bb_buy'] = stock_data['Close'] > stock_data['Lower_Band']
@@ -183,78 +181,49 @@ def generate_trading_signals_with_ml(stock_data):
         df['Upper_Band'] = df['Upper_Band'].fillna(df['Close'] * 1.1)
         df['Lower_Band'] = df['Lower_Band'].fillna(df['Close'] * 0.9)
         
-        # Create target variable using optimized technical criteria.
+        # Create target variable using technical criteria.
         df['target'] = 0
-        df.loc[
-            (df['macd_buy'] | df['rsi_buy']) & (df['vwap_buy'] | df['bb_buy'] | df['fib_buy']),
-            'target'
-        ] = 1
-        df.loc[
-            (df['macd_sell'] | df['rsi_sell']) & (df['vwap_sell'] | df['bb_sell'] | df['fib_sell']),
-            'target'
-        ] = -1
-
-        # Shift the target to avoid lookahead bias (today's features predict tomorrow).
+        buy_cond = (df['macd_buy'] | df['rsi_buy']) & (df['vwap_buy'] | df['bb_buy'] | df['fib_buy'])
+        sell_cond = (df['macd_sell'] | df['rsi_sell']) & (df['vwap_sell'] | df['bb_sell'] | df['fib_sell'])
+        df.loc[buy_cond, 'target'] = 1
+        df.loc[sell_cond, 'target'] = -1
+        # Hold condition already set to 0.
+        
+        # Shift target to avoid lookahead bias.
         df['target'] = df['target'].shift(1).fillna(0)
         
-        # Prepare feature matrix X and target vector y.
-        X = df[['MACD', 'RSI', 'Close', 'Upper_Band', 'Lower_Band', 'VWAP', 'Signal_Line', 'Fib_0.618', 'Fib_0.382',
-            'macd_buy', 'macd_sell', 'vwap_buy', 'vwap_sell', 'rsi_buy', 'rsi_sell', 'bb_buy', 'bb_sell', 'fib_buy', 'fib_sell']]
+        # Prepare feature matrix X and vector y.
+        feature_cols = ['MACD', 'RSI', 'Close', 'Upper_Band', 'Lower_Band', 
+                        'VWAP', 'Signal_Line', 'Fib_0.618', 'Fib_0.382',
+                        'macd_buy', 'macd_sell', 'vwap_buy', 'vwap_sell', 
+                        'rsi_buy', 'rsi_sell', 'bb_buy', 'bb_sell', 'fib_buy', 'fib_sell']
+        X = df[feature_cols]
         y = df['target']
-
-        # --- Bias Mitigation: Scale features using a robust scaler ---
+        
+        # Scale features.
         scaler = RobustScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # --- Chronological Train-Test Split ---
+        # Chronological Train-Test split.
         split_idx = int(len(df) * 0.8)
         X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
         
-        # --- Use TimeSeriesSplit for cross-validation ---
-        tscv = TimeSeriesSplit(n_splits=5)
-        
-        # --- Define Powerful Base Estimators with Class Weighting if needed ---
-        # You can tune hyperparameters and adjust class weights to mitigate imbalances.
-        xgb_est = xgb.XGBClassifier(n_estimators=150, random_state=42, use_label_encoder=False, eval_metric='logloss')
-        lgb_est = lgb.LGBMClassifier(n_estimators=150, random_state=42)
-        cat_est = CatBoostClassifier(n_estimators=150, random_state=42, verbose=0)
-        
-        # --- Stacking Ensemble ---
-        estimators = [
-            ('xgb', xgb_est),
-            ('lgb', lgb_est),
-            ('cat', cat_est)
-        ]
-        
-        # Final estimator can be a RidgeClassifier (or another linear model)
-        model = StackingClassifier(estimators=estimators, final_estimator=RidgeClassifier())
-        
-        # Optionally, you can perform grid search with TimeSeriesSplit to further tune the hyperparameters:
-        # param_grid = {
-        #     'xgb__max_depth': [3, 5],
-        #     'lgb__learning_rate': [0.01, 0.1],
-        #     # Add more parameters as needed.
-        # }
-        # grid_search = GridSearchCV(model, param_grid, cv=tscv)
-        # grid_search.fit(X_train, y_train)
-        # model = grid_search.best_estimator_
-        
-        # Train the model on the training set.
+        # Train CatBoostClassifier only.
+        model = CatBoostClassifier(n_estimators=250, random_state=42, verbose=0)
         model.fit(X_train, y_train)
         
         # Evaluate on the test set.
         y_pred = model.predict(X_test)
         print("Classification Report on Test Set:\n", classification_report(y_test, y_pred))
         
-        # Predict signals on the entire dataset.
-        signals = model.predict(X_scaled)
+        # Predict signals on all data.
+        signals = model.predict(X_scaled).ravel()
         signals_series = pd.Series(signals, index=df.index).fillna(0)
         
         return signals_series
-        
     except Exception as e:
-        print(f"Error generating signals with powerful ML: {str(e)}")
+        print(f"Error generating signals with CatBoost: {str(e)}")
         return pd.Series(0, index=stock_data.index)
 
     
@@ -346,11 +315,12 @@ def backtest(stock_data, initial_balance=10000, ml=False, stop_loss_pct=0.1):
 def create_dashboard(stock_data, backtest_results, ticker):
     """Create an interactive dashboard with improved visualizations."""
     try:
+        # Update to 2 rows: first for Price & Signals, second for Portfolio Value
         fig = make_subplots(
-            rows=3, cols=1,
+            rows=2, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.1,
-            subplot_titles=('Stock Price & Indicators', 'Portfolio Value', 'Trade Signals')
+            subplot_titles=('Stock Price, Indicators & Trading Signals', 'Portfolio Value')
         )
 
         # Plot 1: Stock Price & Indicators
@@ -377,6 +347,31 @@ def create_dashboard(stock_data, backtest_results, ticker):
                       line=dict(color='gray', dash='dash'), name='Lower BB'),
             row=1, col=1
         )
+        
+        # Overlay Buy/Sell Signals on the first plot
+        if backtest_results['buy_dates']:
+            fig.add_trace(
+                go.Scatter(
+                    x=backtest_results['buy_dates'],
+                    y=[stock_data.loc[date, 'Close'] for date in backtest_results['buy_dates']],
+                    mode='markers',
+                    name='Buy Signal',
+                    marker=dict(color='green', size=15, symbol='triangle-up')
+                ),
+                row=1, col=1
+            )
+        
+        if backtest_results['sell_dates']:
+            fig.add_trace(
+                go.Scatter(
+                    x=backtest_results['sell_dates'],
+                    y=[stock_data.loc[date, 'Close'] for date in backtest_results['sell_dates']],
+                    mode='markers',
+                    name='Sell Signal',
+                    marker=dict(color='red', size=15, symbol='triangle-down')
+                ),
+                row=1, col=1
+            )
 
         # Plot 2: Portfolio Value
         fig.add_trace(
@@ -389,40 +384,14 @@ def create_dashboard(stock_data, backtest_results, ticker):
             row=2, col=1
         )
 
-        # Plot 3: Buy/Sell Signals
-        if backtest_results['buy_dates']:
-            fig.add_trace(
-                go.Scatter(
-                    x=backtest_results['buy_dates'],
-                    y=[stock_data.loc[date, 'Close'] for date in backtest_results['buy_dates']],
-                    mode='markers',
-                    name='Buy Signal',
-                    marker=dict(color='green', size=10, symbol='triangle-up')
-                ),
-                row=3, col=1
-            )
-        
-        if backtest_results['sell_dates']:
-            fig.add_trace(
-                go.Scatter(
-                    x=backtest_results['sell_dates'],
-                    y=[stock_data.loc[date, 'Close'] for date in backtest_results['sell_dates']],
-                    mode='markers',
-                    name='Sell Signal',
-                    marker=dict(color='red', size=10, symbol='triangle-down')
-                ),
-                row=3, col=1
-            )
-
         # Update layout
         fig.update_layout(
             title=f'{ticker} Trading Dashboard',
-            height=2500,
+            height=1500,
             showlegend=True,
-            xaxis3_title='Date',
+            xaxis2_title='Date',
             yaxis_title='Price',
             yaxis2_title='Portfolio Value',
-            yaxis3_title='Price',
             xaxis=dict(
                 rangeselector=dict(
                     buttons=list([
