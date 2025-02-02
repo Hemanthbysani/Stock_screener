@@ -13,44 +13,72 @@ from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn import tree
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.preprocessing import RobustScaler
+import xgboost as xgb
+import lightgbm as lgb
+from catboost import CatBoostClassifier
+import json
 
 # Initialize the Dash app with Bootstrap
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
+import pandas as pd
+from datetime import datetime, timedelta
+import yfinance as yf
+
 def calculate_indicators(df):
-    """Calculate technical indicators with error handling."""
+    """Calculate technical indicators including VWAP and Fibonacci retracements."""
     try:
-        # Create a copy to avoid modifying the original dataframe
         stock_data = df.copy()
-        
+
         # MACD
         stock_data['EMA_12'] = stock_data['Close'].ewm(span=12, adjust=False).mean()
         stock_data['EMA_26'] = stock_data['Close'].ewm(span=26, adjust=False).mean()
         stock_data['MACD'] = stock_data['EMA_12'] - stock_data['EMA_26']
         stock_data['Signal_Line'] = stock_data['MACD'].ewm(span=9, adjust=False).mean()
-        
+
         # Bollinger Bands
-        stock_data['SMA'] = stock_data['Close'].rolling(window=20, min_periods = 2).mean()
-        stock_data['std_dev'] = stock_data['Close'].rolling(window=20, min_periods = 2).std()
+        stock_data['SMA'] = stock_data['Close'].rolling(window=20, min_periods=2).mean()
+        stock_data['std_dev'] = stock_data['Close'].rolling(window=20, min_periods=2).std()
         stock_data['Upper_Band'] = stock_data['SMA'] + (stock_data['std_dev'] * 2)
         stock_data['Lower_Band'] = stock_data['SMA'] - (stock_data['std_dev'] * 2)
-        
-        # RSI
+
+        # RSI (using a 14-period window)
         delta = stock_data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+        gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=1).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
         rs = gain / loss
         stock_data['RSI'] = 100 - (100 / (1 + rs))
 
-        stock_data['MACD'] = stock_data['MACD'].fillna(0)  # Neutral MACD value
-        stock_data['RSI'] = stock_data['RSI'].fillna(0)  # Neutral RSI value
-        stock_data['std_dev'] = stock_data['std_dev'].fillna(0)
-        stock_data['SMA'] = stock_data['SMA'].fillna(0)  # Neutral std_dev value
-        stock_data['Close'] = stock_data['Close'].fillna(method='ffill')  # Forward fill for Close price
-        stock_data['Upper_Band'] = stock_data['Upper_Band'].fillna(stock_data['Close'] * 1.1)  # Default to 10% above Close
-        stock_data['Lower_Band'] = stock_data['Lower_Band'].fillna(stock_data['Close'] * 0.9)  # Default to 10% below Close
-        # stock_data['target'] = stock_data['target'].fillna(0)  # Default to Hold # Forward fill for VIX
+        # VWAP
+        stock_data['Typical_Price'] = (stock_data['High'] + stock_data['Low'] + stock_data['Close']) / 3
+        stock_data['Cum_Vol_Price'] = (stock_data['Typical_Price'] * stock_data['Volume']).cumsum()
+        stock_data['Cum_Volume'] = stock_data['Volume'].cumsum()
+        stock_data['VWAP'] = stock_data['Cum_Vol_Price'] / stock_data['Cum_Volume']
 
+        # Fibonacci retracements (using overall min/max)
+        high_price = stock_data['High'].max()
+        low_price = stock_data['Low'].min()
+        diff = high_price - low_price
+        # Pre-calculate common levels:
+        fib_levels = {
+            'Fib_0.236': low_price + diff * 0.236,
+            'Fib_0.382': low_price + diff * 0.382,
+            'Fib_0.5':   low_price + diff * 0.5,
+            'Fib_0.618': low_price + diff * 0.618,
+            'Fib_0.786': low_price + diff * 0.786
+        }
+        for level, value in fib_levels.items():
+            stock_data[level] = value
+
+        # Fill missing values
+        stock_data[['MACD','RSI','std_dev','SMA']] = stock_data[['MACD','RSI','std_dev','SMA']].fillna(0)
+        stock_data['Close'] = stock_data['Close'].fillna(method='ffill')
+        stock_data['Upper_Band'] = stock_data['Upper_Band'].fillna(stock_data['Close'] * 1.1)
+        stock_data['Lower_Band'] = stock_data['Lower_Band'].fillna(stock_data['Close'] * 0.9)
+        stock_data['VWAP'] = stock_data['VWAP'].fillna(stock_data['Close'])
+        print(stock_data.head())
         return stock_data
     except Exception as e:
         print(f"Error calculating indicators: {str(e)}")
@@ -59,148 +87,174 @@ def calculate_indicators(df):
 def get_stock_data(ticker, days, interval):
     """Get stock data with proper error handling and validation."""
     try:
-        # Calculate the start date based on the number of days
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        # Download stock data
         stock_data = yf.download(ticker, start=start_date, end=end_date, interval=interval, progress=False, multi_level_index=False)
         
         if stock_data.empty:
-            raise ValueError(f"No data found for ticker {ticker}")
-            
-        # Ensure the index is datetime
+            raise ValueError(f"No data found for {ticker}")
         stock_data.index = pd.to_datetime(stock_data.index)
-        
-        # Handle gaps in the data by forward-filling missing values
-        stock_data = stock_data.asfreq('H' if interval == '1h' else 'D' if interval == '1d' else 'W').fillna(method='ffill')
-        
+        freq = 'H' if interval == '1h' else 'D' if interval == '1d' else 'W'
+        stock_data = stock_data.asfreq(freq).fillna(method='ffill')
         return stock_data
     except Exception as e:
         print(f"Error fetching data for {ticker}: {str(e)}")
         return None
 
 def generate_trading_signals(stock_data):
-    """Generate trading signals based on technical indicators."""
+    """Generate trading signals using MACD, RSI, Bollinger Bands, VWAP, and Fibonacci retracements."""
     try:
-        # Make sure all Series are aligned by using the same DataFrame
         df = pd.DataFrame(index=stock_data.index)
         
-        # Create individual conditions and store them in the DataFrame
-        df['macd_condition'] = stock_data['MACD'] > stock_data['Signal_Line']
-        df['price_condition_buy'] = stock_data['Close'] > stock_data['Lower_Band']
-        df['rsi_condition_buy'] = stock_data['RSI'] < 60
+        # Primary signals (the "core" indicators)
+        df['macd_buy'] = stock_data['MACD'] > stock_data['Signal_Line']
+        df['macd_sell'] = stock_data['MACD'] < stock_data['Signal_Line']
+        df['vwap_buy'] = stock_data['Close'] > stock_data['VWAP']
+        df['vwap_sell'] = stock_data['Close'] < stock_data['VWAP']
         
-        df['macd_condition_sell'] = stock_data['MACD'] < stock_data['Signal_Line']
-        df['price_condition_sell'] = stock_data['Close'] < stock_data['Upper_Band']
-        df['rsi_condition_sell'] = stock_data['RSI'] > 40
+        # Secondary signals (optional confirmations)
+        # Using optimized RSI thresholds: <30 (oversold) for buys, >70 (overbought) for sells.
+        df['rsi_buy'] = stock_data['RSI'] < 30  
+        df['rsi_sell'] = stock_data['RSI'] > 70  
         
-        # Initialize signals series
+        # Bollinger Bands: Price above lower band (support) for buy; below upper band for sell.
+        df['bb_buy'] = stock_data['Close'] > stock_data['Lower_Band']
+        df['bb_sell'] = stock_data['Close'] < stock_data['Upper_Band']
+        
+        # Fibonacci: For a stronger confirmation, we require the price to be above the 61.8% level for buys 
+        # and below the 38.2% level for sells.
+        df['fib_buy'] = stock_data['Close'] > stock_data['Fib_0.618']
+        df['fib_sell'] = stock_data['Close'] < stock_data['Fib_0.382']
+        
+        # Combine the signals.
+        # Here we require that the "core" indicators (MACD and VWAP) agree,
+        # and that at least one of the secondary signals (RSI, Bollinger Bands, or Fibonacci) confirms.
+        buy_signals = (df['macd_buy'] | df['rsi_buy']) & (df['vwap_buy'] | df['bb_buy'] | df['fib_buy'])
+        sell_signals = (df['macd_sell'] | df['rsi_sell']) & (df['vwap_sell'] | df['bb_sell'] | df['fib_sell'])
+        
         signals = pd.Series(0, index=stock_data.index)
-        
-        # Buy signals (all conditions must be True)
-        buy_signals = (
-            df['macd_condition'] & 
-            df['price_condition_buy'] & 
-            df['rsi_condition_buy']
-        )
-        
-        # Sell signals (all conditions must be True)
-        sell_signals = (
-            df['macd_condition_sell'] & 
-            df['price_condition_sell'] & 
-            df['rsi_condition_sell']
-        )
-        # Set signals
         signals[buy_signals] = 1
         signals[sell_signals] = -1
         
-        # Fill NaN values with 0
-        signals = signals.fillna(0)
-        return signals
-        
+        return signals.fillna(0)
     except Exception as e:
         print(f"Error generating signals: {str(e)}")
         return pd.Series(0, index=stock_data.index)
-    
+
 def generate_trading_signals_with_ml(stock_data):
-    """Generate trading signals based on machine learning model."""
+    """Generate trading signals using a stacking ensemble of powerful models with bias mitigation."""
     try:
-        # Make sure all Series are aligned by using the same DataFrame
+        # Align features and target in a single DataFrame.
         df = pd.DataFrame(index=stock_data.index)
         
-        # Calculate indicators if not already present
-        if 'MACD' not in stock_data.columns:
+        # Ensure indicators are available.
+        if 'MACD' not in stock_data.columns or 'RSI' not in stock_data.columns:
             stock_data = calculate_indicators(stock_data)
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
         
-        # Create feature columns
+        # Build features
         df['MACD'] = stock_data['MACD']
         df['RSI'] = stock_data['RSI']
         df['Close'] = stock_data['Close']
         df['Upper_Band'] = stock_data['Upper_Band']
         df['Lower_Band'] = stock_data['Lower_Band']
+        df['VWAP'] = stock_data['VWAP']
+        df['Signal_Line'] = stock_data['Signal_Line']
+        df['Fib_0.618'] = stock_data['Fib_0.618']
+        df['Fib_0.382'] = stock_data['Fib_0.382']
         
-        #  # Fill NaN values with appropriate defaults
-        # df['MACD'] = df['MACD'].fillna(df.mean())  # Neutral MACD value
-        # df['RSI'] = df['RSI'].fillna(method=df.mean())  # Neutral RSI value
-        # df['Close'] = df['Close'].fillna(method='ffill')  # Forward fill for Close price
-        # df['Upper_Band'] = df['Upper_Band'].fillna(df['Close'] * 1.1)  # Default to 10% above Close
-        # df['Lower_Band'] = df['Lower_Band'].fillna(df['Close'] * 0.9)  # Default to 10% below Close
-        df['target'] = 0  # Default to Hold # Forward fill for VIX
+        # Primary signals (the "core" indicators)
+        df['macd_buy'] = stock_data['MACD'] > stock_data['Signal_Line']
+        df['macd_sell'] = stock_data['MACD'] < stock_data['Signal_Line']
+        df['vwap_buy'] = stock_data['Close'] > stock_data['VWAP']
+        df['vwap_sell'] = stock_data['Close'] < stock_data['VWAP']
         
-        print(df.head())
-        # Buy condition: MACD > Signal line, RSI < 60, Close > Lower Band
+        # Secondary signals (optional confirmations)
+        df['rsi_buy'] = stock_data['RSI'] < 30  
+        df['rsi_sell'] = stock_data['RSI'] > 70  
+        df['bb_buy'] = stock_data['Close'] > stock_data['Lower_Band']
+        df['bb_sell'] = stock_data['Close'] < stock_data['Upper_Band']
+        df['fib_buy'] = stock_data['Close'] > stock_data['Fib_0.618']
+        df['fib_sell'] = stock_data['Close'] < stock_data['Fib_0.382']
+        
+        # Fill missing values robustly.
+        df.fillna(method='ffill', inplace=True)
+        df['Upper_Band'] = df['Upper_Band'].fillna(df['Close'] * 1.1)
+        df['Lower_Band'] = df['Lower_Band'].fillna(df['Close'] * 0.9)
+        
+        # Create target variable using optimized technical criteria.
+        df['target'] = 0
         df.loc[
-            (stock_data['MACD'] > stock_data['Signal_Line']) & 
-            (stock_data['RSI'] < 60) & 
-            (stock_data['Close'] > stock_data['Lower_Band']), 'target'] = 1
+            (df['macd_buy'] | df['rsi_buy']) & (df['vwap_buy'] | df['bb_buy'] | df['fib_buy']),
+            'target'
+        ] = 1
+        df.loc[
+            (df['macd_sell'] | df['rsi_sell']) & (df['vwap_sell'] | df['bb_sell'] | df['fib_sell']),
+            'target'
+        ] = -1
 
-        # Sell condition: MACD < Signal line, RSI > 40, Close < Upper Band
-        df.loc[
-            (stock_data['MACD'] < stock_data['Signal_Line']) & 
-            (stock_data['RSI'] > 40) & 
-            (stock_data['Close'] < stock_data['Upper_Band']), 'target'] = -1
-        df['target'] = df['target'].shift(1).fillna(0) # Shift to avoid lookahead bias
-        # Shift target to avoid lookahead bias (use previous day's target for today's decision)
+        # Shift the target to avoid lookahead bias (today's features predict tomorrow).
+        df['target'] = df['target'].shift(1).fillna(0)
         
-       
-        
-        # Split the data into features (X) and target (y)
-        X = df[['MACD', 'RSI', 'Close', 'Upper_Band', 'Lower_Band']]
+        # Prepare feature matrix X and target vector y.
+        X = df[['MACD', 'RSI', 'Close', 'Upper_Band', 'Lower_Band', 'VWAP', 'Signal_Line', 'Fib_0.618', 'Fib_0.382',
+            'macd_buy', 'macd_sell', 'vwap_buy', 'vwap_sell', 'rsi_buy', 'rsi_sell', 'bb_buy', 'bb_sell', 'fib_buy', 'fib_sell']]
         y = df['target']
-        # print("X+y=" + df.head())
-        # Train-test split (80% train, 20% test)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # --- Bias Mitigation: Scale features using a robust scaler ---
+        scaler = RobustScaler()
+        X_scaled = scaler.fit_transform(X)
         
+        # --- Chronological Train-Test Split ---
+        split_idx = int(len(df) * 0.8)
+        X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
+        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        
+        # --- Use TimeSeriesSplit for cross-validation ---
+        tscv = TimeSeriesSplit(n_splits=5)
+        
+        # --- Define Powerful Base Estimators with Class Weighting if needed ---
+        # You can tune hyperparameters and adjust class weights to mitigate imbalances.
+        xgb_est = xgb.XGBClassifier(n_estimators=150, random_state=42, use_label_encoder=False, eval_metric='logloss')
+        lgb_est = lgb.LGBMClassifier(n_estimators=150, random_state=42)
+        cat_est = CatBoostClassifier(n_estimators=150, random_state=42, verbose=0)
+        
+        # --- Stacking Ensemble ---
         estimators = [
-                    ('rf', RandomForestClassifier(n_estimators=150, random_state=42)),
-                    ('gb', GradientBoostingClassifier(n_estimators=150, random_state=42),
-                     'ab', AdaBoostClassifier(n_estimators=150, random_state=42))]
-        # Initialize and train the model (using RandomForestClassifier as an example)
+            ('xgb', xgb_est),
+            ('lgb', lgb_est),
+            ('cat', cat_est)
+        ]
+        
+        # Final estimator can be a RidgeClassifier (or another linear model)
         model = StackingClassifier(estimators=estimators, final_estimator=RidgeClassifier())
+        
+        # Optionally, you can perform grid search with TimeSeriesSplit to further tune the hyperparameters:
+        # param_grid = {
+        #     'xgb__max_depth': [3, 5],
+        #     'lgb__learning_rate': [0.01, 0.1],
+        #     # Add more parameters as needed.
+        # }
+        # grid_search = GridSearchCV(model, param_grid, cv=tscv)
+        # grid_search.fit(X_train, y_train)
+        # model = grid_search.best_estimator_
+        
+        # Train the model on the training set.
         model.fit(X_train, y_train)
-        if not hasattr(model, 'estimators_'):
-            raise ValueError("Model training failed")
+        
+        # Evaluate on the test set.
         y_pred = model.predict(X_test)
-        print("Classification Report:\n", classification_report(y_test, y_pred))
+        print("Classification Report on Test Set:\n", classification_report(y_test, y_pred))
         
-        # Predict the trading signals on the entire dataset
-        signals = model.predict(X)
-        
-        # Check if signals are valid
-        if signals is None or len(signals) == 0:
-            raise ValueError("Invalid signals generated by the model")
-        
-        # Map the predictions back to the original index
-        signals_series = pd.Series(signals, index=df.index)
-        
-        # Fill NaN values with 0
-        signals_series = signals_series.fillna(0)
+        # Predict signals on the entire dataset.
+        signals = model.predict(X_scaled)
+        signals_series = pd.Series(signals, index=df.index).fillna(0)
         
         return signals_series
+        
     except Exception as e:
-        print(f"Error generating signals with ML: {str(e)}")
+        print(f"Error generating signals with powerful ML: {str(e)}")
         return pd.Series(0, index=stock_data.index)
 
     
@@ -211,7 +265,7 @@ def get_nifty_top_10():
                      'BHARTIARTL.NS', 'KOTAKBANK.NS', 'ITC.NS', 'LT.NS']
     return nifty_tickers
 
-def backtest(stock_data, initial_balance=10000, ml=False, stop_loss_pct=0.075):
+def backtest(stock_data, initial_balance=10000, ml=False, stop_loss_pct=0.1):
     """Improved backtesting function that tracks portfolio value until the latest data point."""
     try:
         cash = initial_balance
@@ -247,7 +301,7 @@ def backtest(stock_data, initial_balance=10000, ml=False, stop_loss_pct=0.075):
                 stop_loss_price = None  # Reset stop-loss price
             
             # Check for stop-loss condition
-            if shares > 0 and current_price <= stop_loss_price:
+            if stop_loss_price is not None and shares > 0 and current_price <= stop_loss_price:
                 cash += shares * current_price
                 shares = 0
                 sell_dates.append(date)
@@ -394,6 +448,65 @@ def create_dashboard(stock_data, backtest_results, ticker):
         print(f"Error creating dashboard: {str(e)}")
         return go.Figure()
 
+def fundamentals_screener(ticker):
+    try:
+        yf_ticker = yf.Ticker(ticker)
+        info = yf_ticker.info
+        # Fetch additional data from yfinance
+        rec = yf_ticker.recommendations
+        rec_sum = getattr(yf_ticker, "recommendations_summary", None)
+        up_down = getattr(yf_ticker, "upgrades_downgrades", None)
+        sustain = yf_ticker.sustainability
+        analyst_pt = getattr(yf_ticker, "analyst_price_targets", None)
+        earnings_est = getattr(yf_ticker, "earnings_estimate", None)
+        revenue_est = getattr(yf_ticker, "revenue_estimate", None)
+        earnings_hist = getattr(yf_ticker, "earnings_history", None)
+        eps_tr = getattr(yf_ticker, "eps_trend", None)
+        eps_rev = getattr(yf_ticker, "eps_revisions", None)
+        growth_est = getattr(yf_ticker, "growth_estimates", None)
+        funds_data = getattr(yf_ticker, "funds_data", None)
+        insider_purch = getattr(yf_ticker, "insider_purchases", None)
+        insider_trans = getattr(yf_ticker, "insider_transactions", None)
+        insider_roster = getattr(yf_ticker, "insider_roster_holders", None)
+        major_hold = yf_ticker.major_holders
+
+        fundamentals = {
+            "Current Price": info.get("currentPrice", "N/A"),
+            "Target Mean Price": info.get("targetMeanPrice", "N/A"),
+            "Trailing P/E": info.get("trailingPE", "N/A"),
+            "Forward P/E": info.get("forwardPE", "N/A"),
+            "Price to Book": info.get("priceToBook", "N/A"),
+            "Total Assets": info.get("totalAssets", "N/A"),
+            "Recommendation": info.get("recommendationKey", "N/A"),
+            "Earnings Quarterly Growth": info.get("earningsQuarterlyGrowth", "N/A"),
+            "recommendations": rec.to_dict('records') if rec is not None else None,
+            "recommendations_summary": rec_sum.to_dict('records') if hasattr(rec_sum, 'to_dict') else rec_sum,
+            "upgrades_downgrades": up_down.to_dict('records') if hasattr(up_down, 'to_dict') else up_down,
+            "sustainability": sustain.to_dict() if hasattr(sustain, 'to_dict') else sustain,
+            "analyst_price_targets": analyst_pt,
+            "earnings_estimate": earnings_est,
+            "revenue_estimate": revenue_est,
+            "earnings_history": earnings_hist,
+            "eps_trend": eps_tr,
+            "eps_revisions": eps_rev,
+            "growth_estimates": growth_est,
+            "funds_data": str(funds_data),
+            "insider_purchases": insider_purch,
+            "insider_transactions": insider_trans,
+            "insider_roster_holders": insider_roster,
+            "major_holders": major_hold
+        }
+
+        # Convert nested dictionaries or lists to pretty JSON strings
+        for key, value in fundamentals.items():
+            if isinstance(value, (dict, list)):
+                fundamentals[key] = json.dumps(value, indent=2)
+                    
+        return fundamentals
+    except Exception as e:
+        print(f"Error fetching fundamentals for {ticker}: {str(e)}")
+        return {}
+    
 # Layout remains the same as before
 app.layout = dbc.Container([
     dbc.Row([
@@ -426,7 +539,7 @@ app.layout = dbc.Container([
                             {'label': '1 Day', 'value': '1d'},
                             {'label': '1 Week', 'value': '1wk'}
                         ],
-                        value='1h',
+                        value='1d',
                         className="form-control mb-3"
                     ),
                     html.Label("Initial Balance"),
@@ -439,6 +552,7 @@ app.layout = dbc.Container([
                     dbc.Button("Run Backtest", id='run-btn', color='primary', className="mr-2"),
                     dbc.Button("Run ML Backtest", id='ml-btn', color='secondary', className="mr-2"),
                     dbc.Button("Run NIFTY Backtest", id='nifty-btn', color='info'),
+                    dbc.Button("Fetch Fundamentals", id='fundamentals-btn', color='info', className="mr-2"),
                     html.Div(id='error-message', className="text-danger mt-3")
                 ])
             ])
@@ -460,6 +574,13 @@ app.layout = dbc.Container([
                     ])
                 ]
             )
+        ], width=12)
+    ]),
+
+    dbc.Row([
+        dbc.Col([
+            html.H3("Fundamentals Screener", className="text-center mt-4"),
+            html.Div(id='fundamentals-div', className="mt-3", style={"border": "1px solid #ccc", "padding": "10px"})
         ], width=12)
     ])
 ], fluid=True)
@@ -590,6 +711,27 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
     except Exception as e:
         return "", "", str(e)
 
+@app.callback(
+    Output('fundamentals-div', 'children'),
+    Input('fundamentals-btn', 'n_clicks'),
+    State('ticker-input', 'value')
+)
+def update_fundamentals(n_clicks, ticker):
+    ctx = dash.callback_context
+
+    if not ctx.triggered:
+        return ""
+    
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    if triggered_id == 'fundamentals-btn':
+        fundamentals = fundamentals_screener(ticker)
+        if not fundamentals:
+            return html.P("No fundamental data available.")
+        content = []
+        for key, value in fundamentals.items():
+            content.append(html.P(f"{key}: {value}"))
+        return html.Div(content)
 
 if __name__ == '__main__':
     app.run_server(debug=True)
