@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier, StackingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn import tree
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
@@ -178,7 +178,7 @@ def generate_trading_signals_with_ml(stock_data):
                     ('gb', GradientBoostingClassifier(n_estimators=150, random_state=42),
                      'ab', AdaBoostClassifier(n_estimators=150, random_state=42))]
         # Initialize and train the model (using RandomForestClassifier as an example)
-        model = StackingClassifier(estimators=estimators, final_estimator=LogisticRegression())
+        model = StackingClassifier(estimators=estimators, final_estimator=RidgeClassifier())
         model.fit(X_train, y_train)
         if not hasattr(model, 'estimators_'):
             raise ValueError("Model training failed")
@@ -211,8 +211,7 @@ def get_nifty_top_10():
                      'BHARTIARTL.NS', 'KOTAKBANK.NS', 'ITC.NS', 'LT.NS']
     return nifty_tickers
 
-
-def backtest(stock_data, initial_balance=10000, ml=False):
+def backtest(stock_data, initial_balance=10000, ml=False, stop_loss_pct=0.075):
     """Improved backtesting function that tracks portfolio value until the latest data point."""
     try:
         cash = initial_balance
@@ -220,6 +219,8 @@ def backtest(stock_data, initial_balance=10000, ml=False):
         portfolio_values = []
         buy_dates = []
         sell_dates = []
+        stop_loss_price = None
+        
         # Generate signals for the entire dataset
         if ml == True:
             signals = generate_trading_signals_with_ml(stock_data)
@@ -238,10 +239,19 @@ def backtest(stock_data, initial_balance=10000, ml=False):
                     cash -= shares_to_buy * current_price
                     shares += shares_to_buy
                     buy_dates.append(date)
+                    stop_loss_price = current_price * (1 - stop_loss_pct)  # Set stop-loss price
             elif signal == -1 and shares > 0:  # Sell signal
                 cash += shares * current_price
                 shares = 0
                 sell_dates.append(date)
+                stop_loss_price = None  # Reset stop-loss price
+            
+            # Check for stop-loss condition
+            if shares > 0 and current_price <= stop_loss_price:
+                cash += shares * current_price
+                shares = 0
+                sell_dates.append(date)
+                stop_loss_price = None  # Reset stop-loss price
             
             # Calculate current portfolio value (cash + value of held shares)
             current_portfolio_value = cash + (shares * current_price)
