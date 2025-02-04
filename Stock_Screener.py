@@ -8,90 +8,14 @@ import numpy as np
 import plotly.graph_objects as go
 import json
 from plotly.subplots import make_subplots
+from backtest import backtest
 from calculate_indicators import calculate_indicators
-from get_data import get_stock_data, get_nifty_top_10
+from fundamentals_screener import fundamentals_screener
 from generate_signals import generate_trading_signals, generate_trading_signals_with_ml
+from get_data import get_stock_data, get_nifty_top_10
 
 # Initialize the Dash app with Bootstrap
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
-
-def backtest(stock_data, initial_balance=10000, ml=False, stop_loss_pct=0.1):
-    """Improved backtesting function that tracks portfolio value until the latest data point."""
-    try:
-        cash = initial_balance
-        shares = 0
-        portfolio_values = []
-        buy_dates = []
-        sell_dates = []
-        stop_loss_price = None
-        
-        # Generate signals for the entire dataset
-        if ml == True:
-            signals = generate_trading_signals_with_ml(stock_data)
-        else:
-            signals = generate_trading_signals(stock_data)
-        
-        # Iterate through all dates
-        for date in stock_data.index:
-            current_price = stock_data.loc[date, 'Close']
-            signal = signals[date]
-            
-            # Execute trades based on signals
-            if signal == 1 and cash >= current_price:  # Buy signal
-                shares_to_buy = int(cash // current_price)  # Ensure whole number of shares
-                if shares_to_buy > 0:  # Only record if we actually buy
-                    cash -= shares_to_buy * current_price
-                    shares += shares_to_buy
-                    buy_dates.append(date)
-                    stop_loss_price = current_price * (1 - stop_loss_pct)  # Set stop-loss price
-            elif signal == -1 and shares > 0:  # Sell signal
-                cash += shares * current_price
-                shares = 0
-                sell_dates.append(date)
-                stop_loss_price = None  # Reset stop-loss price
-            
-            # Check for stop-loss condition
-            if stop_loss_price is not None and shares > 0 and current_price <= stop_loss_price:
-                cash += shares * current_price
-                shares = 0
-                sell_dates.append(date)
-                stop_loss_price = None  # Reset stop-loss price
-            
-            # Calculate current portfolio value (cash + value of held shares)
-            current_portfolio_value = cash + (shares * current_price)
-            portfolio_values.append(current_portfolio_value)
-        
-        # Ensure we have a portfolio value for every date
-        if len(portfolio_values) < len(stock_data):
-            missing_dates = len(stock_data) - len(portfolio_values)
-            last_value = portfolio_values[-1] if portfolio_values else initial_balance
-            portfolio_values.extend([last_value] * missing_dates)
-        
-        # Calculate final position value
-        final_value = portfolio_values[-1]
-        
-        # Calculate returns and metrics
-        returns = np.array(portfolio_values) / initial_balance - 1
-        peak = np.maximum.accumulate(portfolio_values)
-        drawdown = (np.array(portfolio_values) - peak) / peak
-        
-        metrics = {
-            'final_value': final_value,
-            'total_return': ((final_value - initial_balance) / initial_balance) * 100,
-            'sharpe_ratio': np.mean(returns) / np.std(returns) if np.std(returns) != 0 else 0,
-            'max_drawdown': drawdown.min() * 100 if len(drawdown) > 0 else 0,
-            'num_trades': len(buy_dates),
-            'current_shares': shares,
-            'current_cash': cash,
-            'portfolio_values': portfolio_values,
-            'buy_dates': buy_dates,
-            'sell_dates': sell_dates
-        }
-        
-        return metrics
-    except Exception as e:
-        print(f"Error in backtesting: {str(e)}")
-        return None
 
 def create_dashboard(stock_data, backtest_results, ticker):
     """Create an interactive dashboard with improved visualizations."""
@@ -197,65 +121,6 @@ def create_dashboard(stock_data, backtest_results, ticker):
     except Exception as e:
         print(f"Error creating dashboard: {str(e)}")
         return go.Figure()
-
-def fundamentals_screener(ticker):
-    try:
-        yf_ticker = yf.Ticker(ticker)
-        info = yf_ticker.info
-        # Fetch additional data from yfinance
-        rec = yf_ticker.recommendations
-        rec_sum = getattr(yf_ticker, "recommendations_summary", None)
-        up_down = getattr(yf_ticker, "upgrades_downgrades", None)
-        sustain = yf_ticker.sustainability
-        analyst_pt = getattr(yf_ticker, "analyst_price_targets", None)
-        earnings_est = getattr(yf_ticker, "earnings_estimate", None)
-        revenue_est = getattr(yf_ticker, "revenue_estimate", None)
-        earnings_hist = getattr(yf_ticker, "earnings_history", None)
-        eps_tr = getattr(yf_ticker, "eps_trend", None)
-        eps_rev = getattr(yf_ticker, "eps_revisions", None)
-        growth_est = getattr(yf_ticker, "growth_estimates", None)
-        funds_data = getattr(yf_ticker, "funds_data", None)
-        insider_purch = getattr(yf_ticker, "insider_purchases", None)
-        insider_trans = getattr(yf_ticker, "insider_transactions", None)
-        insider_roster = getattr(yf_ticker, "insider_roster_holders", None)
-        major_hold = yf_ticker.major_holders
-
-        fundamentals = {
-            "Current Price": info.get("currentPrice", "N/A"),
-            "Target Mean Price": info.get("targetMeanPrice", "N/A"),
-            "Trailing P/E": info.get("trailingPE", "N/A"),
-            "Forward P/E": info.get("forwardPE", "N/A"),
-            "Price to Book": info.get("priceToBook", "N/A"),
-            "Total Assets": info.get("totalAssets", "N/A"),
-            "Recommendation": info.get("recommendationKey", "N/A"),
-            "Earnings Quarterly Growth": info.get("earningsQuarterlyGrowth", "N/A"),
-            "recommendations": rec.to_dict('records') if rec is not None else None,
-            "recommendations_summary": rec_sum.to_dict('records') if hasattr(rec_sum, 'to_dict') else rec_sum,
-            "upgrades_downgrades": up_down.to_dict('records') if hasattr(up_down, 'to_dict') else up_down,
-            "sustainability": sustain.to_dict() if hasattr(sustain, 'to_dict') else sustain,
-            "analyst_price_targets": analyst_pt,
-            "earnings_estimate": earnings_est,
-            "revenue_estimate": revenue_est,
-            "earnings_history": earnings_hist,
-            "eps_trend": eps_tr,
-            "eps_revisions": eps_rev,
-            "growth_estimates": growth_est,
-            "funds_data": str(funds_data),
-            "insider_purchases": insider_purch,
-            "insider_transactions": insider_trans,
-            "insider_roster_holders": insider_roster,
-            "major_holders": major_hold
-        }
-
-        # Convert nested dictionaries or lists to pretty JSON strings
-        for key, value in fundamentals.items():
-            if isinstance(value, (dict, list)):
-                fundamentals[key] = json.dumps(value, indent=2)
-                    
-        return fundamentals
-    except Exception as e:
-        print(f"Error fetching fundamentals for {ticker}: {str(e)}")
-        return {}
     
 # Layout remains the same as before
 app.layout = dbc.Container([
@@ -372,8 +237,10 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
             
+            signals = generate_trading_signals(stock_data)
+            
             # Run backtest
-            results = backtest(stock_data, initial_balance)
+            results = backtest(signals, stock_data, initial_balance, )
             if results is None:
                 raise ValueError("Error running backtest")
             
@@ -405,8 +272,9 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
             
+            signals = generate_trading_signals_with_ml(stock_data)
             # Run backtest
-            results = backtest(stock_data, initial_balance, ml=True)
+            results = backtest(signals, stock_data, initial_balance, )
             if results is None:
                 raise ValueError("Error running backtest")
             
@@ -438,9 +306,9 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
                 stock_data = calculate_indicators(stock_data)
                 if stock_data is None:
                     continue
-                
+                signals = generate_trading_signals(stock_data)
                 # Run backtest
-                results = backtest(stock_data, initial_balance)
+                results = backtest(signals, stock_data, initial_balance)
                 if results is None:
                     continue
                 

@@ -1,8 +1,13 @@
-from catboost import CatBoostClassifier
 import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report
 from sklearn.preprocessing import RobustScaler
 from calculate_indicators import calculate_indicators
+import numpy as np
+import backtest
+import gym
+from gym import spaces
 
 def generate_trading_signals(stock_data):
     """Generate trading signals using MACD, RSI, Bollinger Bands, VWAP, and Fibonacci retracements."""
@@ -44,87 +49,175 @@ def generate_trading_signals(stock_data):
         print(f"Error generating signals: {str(e)}")
         return pd.Series(0, index=stock_data.index)
 
-def generate_trading_signals_with_ml(stock_data):
-    """Generate trading signals using a CatBoostClassifier only."""
+# def generate_trading_signals_with_ml(stock_data):
+#     """Generate trading signals using machine learning and evaluate via backtest"""
+#     try:
+#         # Ensure the key indicators are available.
+#         if 'MACD' not in stock_data.columns or 'RSI' not in stock_data.columns:
+#             stock_data = calculate_indicators(stock_data)
+#             if stock_data is None:
+#                 raise ValueError("Error calculating indicators")
+        
+#         # Build the feature DataFrame (as before)
+#         df = pd.DataFrame(index=stock_data.index)
+#         df['MACD'] = stock_data['MACD']
+#         df['RSI'] = stock_data['RSI']
+#         df['Close'] = stock_data['Close']
+#         df['Upper_Band'] = stock_data['Upper_Band']
+#         df['Lower_Band'] = stock_data['Lower_Band']
+#         df['VWAP'] = stock_data['VWAP']
+#         df['Signal_Line'] = stock_data['Signal_Line']
+#         df['Fib_0.618'] = stock_data['Fib_0.618']
+#         df['Fib_0.382'] = stock_data['Fib_0.382']
+        
+#         # Also include the primary and secondary technical signals (for features)
+#         df['macd_buy'] = stock_data['MACD'] > stock_data['Signal_Line']
+#         df['macd_sell'] = stock_data['MACD'] < stock_data['Signal_Line']
+#         df['vwap_buy'] = stock_data['Close'] > stock_data['VWAP']
+#         df['vwap_sell'] = stock_data['Close'] < stock_data['VWAP']
+#         df['rsi_buy'] = stock_data['RSI'] < 30  
+#         df['rsi_sell'] = stock_data['RSI'] > 70  
+#         df['bb_buy'] = stock_data['Close'] > stock_data['Lower_Band']
+#         df['bb_sell'] = stock_data['Close'] < stock_data['Upper_Band']
+#         df['fib_buy'] = stock_data['Close'] > stock_data['Fib_0.618']
+#         df['fib_sell'] = stock_data['Close'] < stock_data['Fib_0.382']
+        
+#         # Instead of computing targets via simulation for every step,
+#         # we now intend to generate trading signals (targets) directly using the ML model.
+#         #
+#         # Prepare feature matrix X.
+#         feature_cols = [
+#             'MACD', 'RSI', 'Close', 'Upper_Band', 'Lower_Band',
+#             'VWAP', 'Signal_Line', 'Fib_0.618', 'Fib_0.382',
+#             'macd_buy', 'macd_sell', 'vwap_buy', 'vwap_sell', 
+#             'rsi_buy', 'rsi_sell', 'bb_buy', 'bb_sell', 'fib_buy', 'fib_sell'
+#         ]
+#         X = df[feature_cols]
+        
+#         # Create targets using traditional technical analysis signals
+#         target = np.where((df['macd_buy'] & df['vwap_buy']), 1, 
+#              np.where((df['macd_sell'] & df['vwap_sell']), -1, 0))
+#         df['target'] = pd.Series(target, index=stock_data.index)
+#         y = df['target']
+#         # Chronologically split data into training and test sets first
+#         split_idx = int(len(df) * 0.7)
+#         X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+#         y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+        
+#         # Scale features using only training data
+#         scaler = RobustScaler()
+#         X_train_scaled = scaler.fit_transform(X_train)
+#         X_test_scaled = scaler.transform(X_test)
+#         # Train the classifier.
+#         model = RandomForestClassifier(random_state=42, verbose=0, n_estimators=150, criterion='log_loss')
+#         model.fit(X_train_scaled, y_train)
+        
+#         # Evaluate on the test set.
+#         y_pred = model.predict(X_test_scaled)
+#         y_pred = model.predict(X_test)
+#         print(y_pred)
+#         print("Classification Report on Test Set:\n", classification_report(y_test, y_pred))
+#         # Generate signals using a rolling window approach
+#         signals = []
+#         for i in range(len(X)):
+#             if i < split_idx:
+#                 signals.append(0)  # No trading during training period
+#             else:
+#                 current_features = scaler.transform(X.iloc[i:i+1])
+#                 signals.append(model.predict(current_features)[0])
+#         signals_series = pd.Series(signals, index=df.index).fillna(0)
+        
+#         # Commented out the backtest call to avoid infinite loop.
+#         # initial_balance = 10000
+#         # sim_result = backtest.backtest(stock_data, initial_balance=initial_balance, strategy='ml')
+#         # print("Backtest result with ML-generated signals:", sim_result)
+        
+#         return signals_series
+#     except Exception as e:
+#         print(f"Error generating signals with ML_Model: {str(e)}")
+#         return pd.Series(0, index=stock_data.index)
+    
+class TradingEnv(gym.Env):
+    def __init__(self, data, initial_balance=10000, window_size=10):
+        super().__init__()
+        self.data = data.copy().reset_index(drop=True)
+        self.initial_balance = initial_balance
+        self.window_size = window_size
+        self.action_space = spaces.Discrete(3)  # 0=Hold, 1=Buy, 2=Sell
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, 
+            shape=(window_size * len(self.data.columns),), 
+            dtype=np.float32
+        )
+        self.current_step = window_size
+        self.signals = np.zeros(len(self.data), dtype=int)
+
+    def _get_obs(self):
+        # Only use historical data up to current step
+        obs_window = self.data.iloc[self.current_step - self.window_size:self.current_step]
+        return obs_window.values.flatten().astype(np.float32)
+
+    def step(self, action):
+        if self.current_step < len(self.data):
+            if action == 1:
+                self.signals[self.current_step] = 1
+            elif action == 2:
+                self.signals[self.current_step] = -1
+
+        self.current_step += 1
+        done = self.current_step >= len(self.data)
+        
+        reward = 0
+        if done:
+            # Only evaluate trades up to the current point
+            metrics = backtest.backtest(
+                pd.Series(self.signals[:self.current_step]),
+                self.data.iloc[:self.current_step],
+                initial_balance=self.initial_balance
+            )
+            reward = metrics['final_value'] - self.initial_balance
+            
+        return self._get_obs(), reward, done, {}
+
+    def reset(self):
+        self.current_step = self.window_size
+        self.signals = np.zeros(len(self.data), dtype=int)
+        return self._get_obs()
+
+def generate_trading_signals_with_ml(stock_data, initial_balance=10000):
+    """Generate trading signals using reinforcement learning"""
     try:
-        # Ensure indicators are available.
-        if 'MACD' not in stock_data.columns or 'RSI' not in stock_data.columns:
+        episodes=100
+        # Ensure all required indicators are available
+        if 'MACD' not in stock_data.columns:
             stock_data = calculate_indicators(stock_data)
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
         
-        # Build feature DataFrame.
-        df = pd.DataFrame(index=stock_data.index)
-        df['MACD'] = stock_data['MACD']
-        df['RSI'] = stock_data['RSI']
-        df['Close'] = stock_data['Close']
-        df['Upper_Band'] = stock_data['Upper_Band']
-        df['Lower_Band'] = stock_data['Lower_Band']
-        df['VWAP'] = stock_data['VWAP']
-        df['Signal_Line'] = stock_data['Signal_Line']
-        df['Fib_0.618'] = stock_data['Fib_0.618']
-        df['Fib_0.382'] = stock_data['Fib_0.382']
+        # Create the environment with the complete dataset
+        env = TradingEnv(stock_data, initial_balance=initial_balance)
+        best_signals = None
+        best_reward = float('-inf')
         
-        # Primary signals
-        df['macd_buy'] = stock_data['MACD'] > stock_data['Signal_Line']
-        df['macd_sell'] = stock_data['MACD'] < stock_data['Signal_Line']
-        df['vwap_buy'] = stock_data['Close'] > stock_data['VWAP']
-        df['vwap_sell'] = stock_data['Close'] < stock_data['VWAP']
+        # Train the agent for multiple episodes
+        for _ in range(episodes):
+            obs = env.reset()
+            done = False
+            while not done:
+                action = env.action_space.sample()  # Replace with actual RL agent action
+                obs, reward, done, info = env.step(action)
+            
+            # Keep track of best performing signals
+            if done and reward > best_reward:
+                print("Rewards: ", reward)
+                best_reward = reward
+                best_signals = env.signals.copy()
         
-        # Secondary signals
-        df['rsi_buy'] = stock_data['RSI'] < 30  
-        df['rsi_sell'] = stock_data['RSI'] > 70  
-        df['bb_buy'] = stock_data['Close'] > stock_data['Lower_Band']
-        df['bb_sell'] = stock_data['Close'] < stock_data['Upper_Band']
-        df['fib_buy'] = stock_data['Close'] > stock_data['Fib_0.618']
-        df['fib_sell'] = stock_data['Close'] < stock_data['Fib_0.382']
+        # Return the best performing signals
+        if best_signals is not None:
+            return pd.Series(best_signals, index=stock_data.index)
+        return pd.Series(0, index=stock_data.index)
         
-        # Fill missing values robustly.
-        df.fillna(method='ffill', inplace=True)
-        df['Upper_Band'] = df['Upper_Band'].fillna(df['Close'] * 1.1)
-        df['Lower_Band'] = df['Lower_Band'].fillna(df['Close'] * 0.9)
-        
-        # Create target variable using technical criteria.
-        df['target'] = 0
-        buy_cond = (df['macd_buy'] | df['rsi_buy']) & (df['vwap_buy'] | df['bb_buy'] | df['fib_buy'])
-        sell_cond = (df['macd_sell'] | df['rsi_sell']) & (df['vwap_sell'] | df['bb_sell'] | df['fib_sell'])
-        df.loc[buy_cond, 'target'] = 1
-        df.loc[sell_cond, 'target'] = -1
-        # Hold condition already set to 0.
-        
-        # Shift target to avoid lookahead bias.
-        df['target'] = df['target'].shift(1).fillna(0)
-        
-        # Prepare feature matrix X and vector y.
-        feature_cols = ['MACD', 'RSI', 'Close', 'Upper_Band', 'Lower_Band', 
-                        'VWAP', 'Signal_Line', 'Fib_0.618', 'Fib_0.382',
-                        'macd_buy', 'macd_sell', 'vwap_buy', 'vwap_sell', 
-                        'rsi_buy', 'rsi_sell', 'bb_buy', 'bb_sell', 'fib_buy', 'fib_sell']
-        X = df[feature_cols]
-        y = df['target']
-        
-        # Scale features.
-        scaler = RobustScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        # Chronological Train-Test split.
-        split_idx = int(len(df) * 0.8)
-        X_train, X_test = X_scaled[:split_idx], X_scaled[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-        
-        # Train CatBoostClassifier only.
-        model = CatBoostClassifier(n_estimators=250, random_state=42, verbose=0)
-        model.fit(X_train, y_train)
-        
-        # Evaluate on the test set.
-        y_pred = model.predict(X_test)
-        print("Classification Report on Test Set:\n", classification_report(y_test, y_pred))
-        
-        # Predict signals on all data.
-        signals = model.predict(X_scaled).ravel()
-        signals_series = pd.Series(signals, index=df.index).fillna(0)
-        
-        return signals_series
     except Exception as e:
-        print(f"Error generating signals with CatBoost: {str(e)}")
+        print(f"Error generating signals with RL: {str(e)}")
         return pd.Series(0, index=stock_data.index)
