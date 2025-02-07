@@ -272,7 +272,7 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
             
-            signals = generate_trading_signals_with_ml(stock_data)
+            signals = generate_trading_signals_with_ml(stock_data, ticker)
             # Run backtest
             results = backtest(signals, stock_data, initial_balance, )
             if results is None:

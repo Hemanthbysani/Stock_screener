@@ -8,6 +8,9 @@ import numpy as np
 import backtest
 import gym
 from gym import spaces
+import os
+import joblib
+from datetime import datetime
 
 def generate_trading_signals(stock_data):
     """Generate trading signals using MACD, RSI, Bollinger Bands, VWAP, and Fibonacci retracements."""
@@ -184,20 +187,27 @@ class TradingEnv(gym.Env):
         self.signals = np.zeros(len(self.data), dtype=int)
         return self._get_obs()
 
-def generate_trading_signals_with_ml(stock_data, initial_balance=10000):
+def generate_trading_signals_with_ml(stock_data, ticker, initial_balance=10000):
     """Generate trading signals using reinforcement learning"""
     try:
-        episodes=100
+        
+        episodes = 100
         # Ensure all required indicators are available
         if 'MACD' not in stock_data.columns:
             stock_data = calculate_indicators(stock_data)
             if stock_data is None:
                 raise ValueError("Error calculating indicators")
         
+        # Create models directory if it doesn't exist
+        models_dir = 'models'
+        if not os.path.exists(models_dir):
+            os.makedirs(models_dir)
+        
         # Create the environment with the complete dataset
         env = TradingEnv(stock_data, initial_balance=initial_balance)
         best_signals = None
         best_reward = float('-inf')
+        best_env = None
         
         # Train the agent for multiple episodes
         for _ in range(episodes):
@@ -212,6 +222,21 @@ def generate_trading_signals_with_ml(stock_data, initial_balance=10000):
                 print("Rewards: ", reward)
                 best_reward = reward
                 best_signals = env.signals.copy()
+                best_env = env
+        
+        # Save the best model with ticker and datetime
+        if best_env is not None:
+            current_time = datetime.now().strftime("%Y%m%d_%H%M")
+            model_filename = f"{models_dir}/{ticker}_{current_time}_model.joblib"
+            model_data = {
+                'env': best_env,
+                'signals': best_signals,
+                'reward': best_reward,
+                'ticker': ticker,
+                'date': current_time
+            }
+            joblib.dump(model_data, model_filename)
+            print(f"Model saved as: {model_filename}")
         
         # Return the best performing signals
         if best_signals is not None:
@@ -220,4 +245,39 @@ def generate_trading_signals_with_ml(stock_data, initial_balance=10000):
         
     except Exception as e:
         print(f"Error generating signals with RL: {str(e)}")
+        return pd.Series(0, index=stock_data.index)
+    
+def predict_with_saved_model(stock_data, ticker, model_dir='models'):
+    """Use the most recent saved model to predict trading signals"""
+    try:
+        # Find the most recent model for this ticker
+        model_files = [f for f in os.listdir(model_dir) if f.startswith(ticker) and f.endswith('_model.joblib')]
+        if not model_files:
+            raise ValueError(f"No saved models found for ticker {ticker}")
+        
+        latest_model_file = max(model_files, key=lambda x: x.split('_')[1])
+        model_path = os.path.join(model_dir, latest_model_file)
+        
+        # Load the saved model
+        model_data = joblib.load(model_path)
+        env = model_data['env']
+        
+        # Generate predictions
+        signals = np.zeros(len(stock_data))
+        current_step = env.window_size
+        
+        while current_step < len(stock_data):
+            obs_window = stock_data.iloc[current_step - env.window_size:current_step]
+            obs = obs_window.values.flatten().astype(np.float32)
+            action = env.action_space.sample()  # Replace with actual model prediction
+            if action == 1:
+                signals[current_step] = 1
+            elif action == 2:
+                signals[current_step] = -1
+            current_step += 1
+            
+        return pd.Series(signals, index=stock_data.index)
+        
+    except Exception as e:
+        print(f"Error predicting with saved model: {str(e)}")
         return pd.Series(0, index=stock_data.index)

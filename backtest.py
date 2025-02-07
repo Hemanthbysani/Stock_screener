@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from utils import calculate_portfolio_value
 
 
 def backtest(signal_data, stock_data, initial_balance=10000, stop_loss_pct=0.1):
@@ -26,7 +25,6 @@ def backtest(signal_data, stock_data, initial_balance=10000, stop_loss_pct=0.1):
                     cash -= shares_to_buy * current_price * 1.0003 # For brokerage
                     shares += shares_to_buy
                     buy_dates.append(date)
-                    stop_loss_price = current_price * (1 - stop_loss_pct)  # Set stop-loss price
                     stop_loss_price = current_price * (1 - stop_loss_pct)  # Set stop-loss price
             elif signal == -1 and shares > 0:  # Sell signal
                 cash += shares * current_price
