@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 
@@ -47,11 +48,11 @@ def get_news_articles(ticker: str, company_name: str = None) -> List[Dict[str, s
     """Get recent news articles about the stock."""
     search = DuckDuckGoSearchRun()
     
-    # Create search query
+    # Create search query with Indian context
     if company_name:
-        query = f"{ticker} {company_name} stock news financial analysis recent"
+        query = f"{ticker} {company_name} stock news NSE BSE financial analysis recent India"
     else:
-        query = f"{ticker} stock news financial analysis recent"
+        query = f"{ticker} stock news NSE BSE financial analysis recent India"
     
     try:
         # Get search results
@@ -103,10 +104,10 @@ def get_market_context() -> Dict[str, Any]:
 
 def analyze_stock_sentiment(ticker: str, days: int = 60, interval: str = "1d") -> Dict[str, Any]:
     """
-    Analyze a stock using LangChain with Google's Gemini model.
+    Analyze an Indian stock using LangChain with Google's Gemini model.
     
     Args:
-        ticker: Stock ticker symbol
+        ticker: Stock ticker symbol (for Indian exchanges)
         days: Number of days of historical data to analyze
         interval: Data interval ('1d' for daily, '1h' for hourly)
         
@@ -164,7 +165,14 @@ def analyze_stock_sentiment(ticker: str, days: int = 60, interval: str = "1d") -
             "pe_ratio": fundamental_data.get("Trailing P/E", "N/A"),
             "forward_pe": fundamental_data.get("Forward P/E", "N/A"),
             "price_to_book": fundamental_data.get("Price to Book", "N/A"),
-            "analyst_recommendation": fundamental_data.get("Recommendation", "N/A")
+            "total_assets": fundamental_data.get("Total Assets", "N/A"),
+            "analyst_recommendation": fundamental_data.get("Recommendation", "N/A"),
+            "earnings_growth": fundamental_data.get("Earnings Quarterly Growth", "N/A"),
+            "eps_trend": fundamental_data.get("eps_trend", "N/A"),
+            "revenue_estimate": fundamental_data.get("revenue_estimate", "N/A"),
+            "earnings_estimate": fundamental_data.get("earnings_estimate", "N/A"),
+            "earnings_history": fundamental_data.get("earnings_history", "N/A"),
+            "analyst_price_targets": fundamental_data.get("analyst_price_targets", "N/A")
         }
         
         # Step 3: Set up LangChain with Gemini
@@ -173,28 +181,35 @@ def analyze_stock_sentiment(ticker: str, days: int = 60, interval: str = "1d") -
         
         # Step 4: Create prompt template
         template = """
-        You are an expert financial analyst with deep knowledge of stock markets, technical analysis, and fundamental analysis. 
+        You are an expert financial analyst with deep knowledge of Indian stock markets, technical analysis, and fundamental analysis. 
         Analyze the following stock data and provide a comprehensive investment recommendation.
         
         Stock Symbol: {ticker}
         Current Date: {current_date}
         
         # Technical Analysis Data:
-        Current Price: ${price:.2f}
+        Current Price in rupees: {price:.2f}
         RSI (14-period): {rsi:.2f}
         MACD: {macd:.4f}
         MACD Signal Line: {macd_signal:.4f}
-        Bollinger Upper Band: ${upper_band:.2f}
-        Bollinger Lower Band: ${lower_band:.2f}
-        VWAP: ${vwap:.2f}
+        Bollinger Upper Band: ₹{upper_band:.2f}
+        Bollinger Lower Band: ₹{lower_band:.2f}
+        VWAP: ₹{vwap:.2f}
         50-Day Price Change: {price_change:.2f}%
         
         # Fundamental Data:
-        Target Price (Analyst Mean): ${target_price}
+        Target Price (Analyst Mean): ₹{target_price}
         Trailing P/E: {pe_ratio}
         Forward P/E: {forward_pe}
         Price-to-Book: {price_to_book}
+        Total Assets: {total_assets}
         Analyst Recommendation: {analyst_rec}
+        Earnings Quarterly Growth: {earnings_growth}
+        EPS Trend: {eps_trend}
+        Revenue Estimate: {revenue_estimate}
+        Earnings Estimate: {earnings_estimate}
+        Earnings History: {earnings_history}
+        Analyst Price Targets: {analyst_price_targets}
         
         # Recent News:
         {news}
@@ -221,7 +236,7 @@ def analyze_stock_sentiment(ticker: str, days: int = 60, interval: str = "1d") -
         # Format market context
         market_context_formatted = ""
         for index_name, data in market_context.items():
-            market_context_formatted += f"{index_name}: ${data['price']} ({data['percent_change']}%, {data['trend_5d']} trend)\n"
+            market_context_formatted += f"{index_name}: ₹{data['price']} ({data['percent_change']}%, {data['trend_5d']} trend)\n"
         
         # Create the prompt
         prompt = PromptTemplate(
@@ -253,7 +268,14 @@ def analyze_stock_sentiment(ticker: str, days: int = 60, interval: str = "1d") -
             "pe_ratio": key_fundamentals["pe_ratio"],
             "forward_pe": key_fundamentals["forward_pe"],
             "price_to_book": key_fundamentals["price_to_book"],
+            "total_assets": key_fundamentals["total_assets"],
             "analyst_rec": key_fundamentals["analyst_recommendation"],
+            "earnings_growth": key_fundamentals["earnings_growth"],
+            "eps_trend": key_fundamentals["eps_trend"],
+            "revenue_estimate": key_fundamentals["revenue_estimate"],
+            "earnings_estimate": key_fundamentals["earnings_estimate"],
+            "earnings_history": key_fundamentals["earnings_history"],
+            "analyst_price_targets": key_fundamentals["analyst_price_targets"],
             "news": news_formatted,
             "market_context": market_context_formatted
         })
@@ -269,6 +291,6 @@ def analyze_stock_sentiment(ticker: str, days: int = 60, interval: str = "1d") -
 
 if __name__ == "__main__":
     # Example usage
-    ticker = "AAPL"
+    ticker = "RELIANCE.NS"  # Example Indian stock (Reliance Industries on NSE)
     insights = analyze_stock_sentiment(ticker, days=60, interval="1d")
     print(json.dumps(insights, indent=2))

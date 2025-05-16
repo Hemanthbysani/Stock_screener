@@ -19,9 +19,7 @@ from stock_insights import analyze_stock_sentiment
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
 def create_dashboard(stock_data, backtest_results, ticker):
-    """Create an interactive dashboard with improved visualizations."""
     try:
-        # Update to 2 rows: first for Price & Signals, second for Portfolio Value
         fig = make_subplots(
             rows=2, cols=1,
             shared_xaxes=True,
@@ -123,7 +121,6 @@ def create_dashboard(stock_data, backtest_results, ticker):
         print(f"Error creating dashboard: {str(e)}")
         return go.Figure()
     
-# Layout remains the same as before
 app.layout = dbc.Container([
     dbc.Row([
         dbc.Col(html.H1("Stock Trading Backtest Dashboard", className="text-center mb-4"), width=12)
@@ -237,17 +234,22 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
     ctx = dash.callback_context
 
     if not ctx.triggered:
-        return "", ""
+        # Return empty figure, metrics, and no error message
+        return go.Figure(), "", ""
     
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
     try:
+        # Clear any old data
+        stock_data = None
+        results = None
+        
         if triggered_id == 'run-btn':  # Backtest for a single stock
             # Validate inputs
             if not ticker or not days or not initial_balance:
                 raise ValueError("Please fill in all fields")
             
-            # Get stock data
+            # Get stock data with the current ticker value
             stock_data = get_stock_data(ticker, days, interval)
             if stock_data is None:
                 raise ValueError(f"Could not fetch data for {ticker}")
@@ -260,7 +262,7 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             signals = generate_trading_signals(stock_data)
             
             # Run backtest
-            results = backtest(signals, stock_data, initial_balance, )
+            results = backtest(signals, stock_data, initial_balance)
             if results is None:
                 raise ValueError("Error running backtest")
             
@@ -268,6 +270,7 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             
             # Format metrics
             metrics_text = f"""
+            Ticker: {ticker}
             Final Portfolio Value: INR{results['final_value']:,.2f}
             Total Return: {results['total_return']:.2f}%
             Sharpe Ratio: {results['sharpe_ratio']:.2f}
@@ -282,7 +285,7 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             if not ticker or not days or not initial_balance:
                 raise ValueError("Please fill in all fields")
             
-            # Get stock data
+            # Get stock data with the current ticker value
             stock_data = get_stock_data(ticker, days, interval)
             if stock_data is None:
                 raise ValueError(f"Could not fetch data for {ticker}")
@@ -294,7 +297,7 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             
             signals = generate_trading_signals_with_ml(stock_data, ticker)
             # Run backtest
-            results = backtest(signals, stock_data, initial_balance, )
+            results = backtest(signals, stock_data, initial_balance)
             if results is None:
                 raise ValueError("Error running backtest")
             
@@ -302,6 +305,7 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             
             # Format metrics
             metrics_text = f"""
+            Ticker: {ticker}
             Final Portfolio Value: INR{results['final_value']:,.2f}
             Total Return: {results['total_return']:.2f}%
             Sharpe Ratio: {results['sharpe_ratio']:.2f}
@@ -316,6 +320,9 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
             nifty_tickers = get_nifty_top_10()
             
             all_metrics = []
+            last_stock_data = None
+            last_results = None
+            
             for ticker in nifty_tickers:
                 # Get stock data
                 stock_data = get_stock_data(ticker, days, interval)
@@ -332,6 +339,10 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
                 if results is None:
                     continue
                 
+                # Keep track of the last valid stock data and results for plotting
+                last_stock_data = stock_data
+                last_results = results
+                
                 # Collect metrics
                 metrics_text = f"""
                 {ticker}:
@@ -343,11 +354,15 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
                 """
                 all_metrics.append(metrics_text)
             
-            fig = create_dashboard(stock_data, results, ticker)
-            return fig, "\n\n".join(all_metrics), ""
+            if last_stock_data is not None and last_results is not None:
+                fig = create_dashboard(last_stock_data, last_results, "NIFTY Top 10")
+                return fig, "\n\n".join(all_metrics), ""
+            else:
+                raise ValueError("Could not fetch data for any NIFTY stocks")
     
     except Exception as e:
-        return "", "", str(e)
+        # Return empty figure on error
+        return go.Figure(), "", str(e)
 
 @app.callback(
     Output('fundamentals-div', 'children'),
@@ -419,7 +434,7 @@ def update_insights(n_clicks, ticker, days, interval):
                         html.Div([
                             html.Div([
                                 html.H5("Target Price"),
-                                html.P(f"${insights['target_price']}", className="lead")
+                                html.P(f"₹{insights['target_price']}", className="lead")
                             ], className="col-md-3"),
                             html.Div([
                                 html.H5("Timeframe"),
@@ -431,7 +446,7 @@ def update_insights(n_clicks, ticker, days, interval):
                             ], className="col-md-3"),
                             html.Div([
                                 html.H5("Stop Loss"),
-                                html.P(f"${insights['stop_loss']}" if insights['stop_loss'] else "N/A", className="lead")
+                                html.P(f"₹{insights['stop_loss']}" if insights['stop_loss'] else "N/A", className="lead")
                             ], className="col-md-3")
                         ], className="row mb-4"),
                         
@@ -490,7 +505,7 @@ def update_insights(n_clicks, ticker, days, interval):
                 html.P(str(e))
             ])
             
-    return html.P("Click 'AI Stock Insights' to generate an analysis.")
+    return html.P("Click 'AI Stock Insights' to generate an analysis of this Indian stock.")
 
 if __name__ == '__main__':
     app.run_server(debug=True)
