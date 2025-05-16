@@ -13,6 +13,7 @@ from calculate_indicators import calculate_indicators
 from fundamentals_screener import fundamentals_screener
 from generate_signals import generate_trading_signals, generate_trading_signals_with_ml
 from get_data import get_stock_data, get_nifty_top_10
+from stock_insights import analyze_stock_sentiment
 
 # Initialize the Dash app with Bootstrap
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
@@ -168,6 +169,7 @@ app.layout = dbc.Container([
                     dbc.Button("Run ML Backtest", id='ml-btn', color='secondary', className="mr-2"),
                     dbc.Button("Run NIFTY Backtest", id='nifty-btn', color='info'),
                     dbc.Button("Fetch Fundamentals", id='fundamentals-btn', color='info', className="mr-2"),
+                    dbc.Button("AI Stock Insights", id='insights-btn', color='success', className="mr-2"),
                     html.Div(id='error-message', className="text-danger mt-3")
                 ])
             ])
@@ -196,6 +198,24 @@ app.layout = dbc.Container([
         dbc.Col([
             html.H3("Fundamentals Screener", className="text-center mt-4"),
             html.Div(id='fundamentals-div', className="mt-3", style={"border": "1px solid #ccc", "padding": "10px"})
+        ], width=12)
+    ]),
+    
+    dbc.Row([
+        dbc.Col([
+            html.H3("AI Stock Insights (Powered by Gemini)", className="text-center mt-4"),
+            dcc.Loading(
+                id="insights-loading",
+                type="circle",
+                children=[
+                    html.Div(id='insights-div', className="mt-3", style={
+                        "border": "1px solid #ccc", 
+                        "padding": "20px",
+                        "border-radius": "5px",
+                        "background-color": "#f9f9f9"
+                    })
+                ]
+            )
         ], width=12)
     ])
 ], fluid=True)
@@ -349,7 +369,128 @@ def update_fundamentals(n_clicks, ticker):
         content = []
         for key, value in fundamentals.items():
             content.append(html.P(f"{key}: {value}"))
-        return html.Div(content)
+        return content
+    return ""
+
+@app.callback(
+    Output('insights-div', 'children'),
+    Input('insights-btn', 'n_clicks'),
+    State('ticker-input', 'value'),
+    State('days-input', 'value'),
+    State('timeframe-dropdown', 'value')
+)
+def update_insights(n_clicks, ticker, days, interval):
+    ctx = dash.callback_context
+
+    if not ctx.triggered:
+        return ""
+    
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    if triggered_id == 'insights-btn' and ticker:
+        try:
+            insights = analyze_stock_sentiment(ticker, days, interval)
+            
+            if "error" in insights:
+                return html.Div([
+                    html.H4("Error", className="text-danger"),
+                    html.P(insights["error"])
+                ])
+            
+            # Create a well-formatted insight card
+            recommendation_color = {
+                "Buy": "success",
+                "Sell": "danger",
+                "Hold": "warning"
+            }.get(insights["recommendation"], "secondary")
+            
+            # Format the insights in a structured, visually appealing way
+            return html.Div([
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H3([
+                            f"Recommendation: ", 
+                            html.Span(insights["recommendation"], className=f"text-{recommendation_color}"),
+                            html.Span(f" (Confidence: {insights['confidence_score']}%)", 
+                                     style={"fontSize": "16px", "marginLeft": "10px"})
+                        ]),
+                    ]),
+                    dbc.CardBody([
+                        html.Div([
+                            html.Div([
+                                html.H5("Target Price"),
+                                html.P(f"${insights['target_price']}", className="lead")
+                            ], className="col-md-3"),
+                            html.Div([
+                                html.H5("Timeframe"),
+                                html.P(insights["timeframe"], className="lead")
+                            ], className="col-md-3"),
+                            html.Div([
+                                html.H5("Risk Level"),
+                                html.P(insights["risk_level"], className="lead")
+                            ], className="col-md-3"),
+                            html.Div([
+                                html.H5("Stop Loss"),
+                                html.P(f"${insights['stop_loss']}" if insights['stop_loss'] else "N/A", className="lead")
+                            ], className="col-md-3")
+                        ], className="row mb-4"),
+                        
+                        html.Hr(),
+                        
+                        html.Div([
+                            html.Div([
+                                html.H5("Entry Strategy"),
+                                html.P(insights["entry_point"] if insights["entry_point"] else "N/A")
+                            ], className="col-md-6"),
+                            html.Div([
+                                html.H5("Exit Strategy"),
+                                html.P(insights["exit_point"] if insights["exit_point"] else "N/A")
+                            ], className="col-md-6")
+                        ], className="row mb-4"),
+                        
+                        html.Hr(),
+                        
+                        html.H5("Key Reasons", className="mb-3"),
+                        html.Ol([
+                            html.Li(reason) for reason in insights["reasoning"]
+                        ]),
+                        
+                        html.Hr(),
+                        
+                        html.Div([
+                            html.Div([
+                                html.H5("Technical Analysis"),
+                                html.P(insights["technical_summary"])
+                            ], className="col-md-6"),
+                            html.Div([
+                                html.H5("Fundamental Analysis"),
+                                html.P(insights["fundamental_summary"])
+                            ], className="col-md-6")
+                        ], className="row mb-3"),
+                        
+                        html.Div([
+                            html.Div([
+                                html.H5("News Sentiment"),
+                                html.P(insights["news_sentiment"])
+                            ], className="col-md-6"),
+                            html.Div([
+                                html.H5("Market Context"),
+                                html.P(insights["market_context"])
+                            ], className="col-md-6")
+                        ], className="row")
+                    ])
+                ])
+            ])
+            
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
+            return html.Div([
+                html.H4("Error generating insights", className="text-danger"),
+                html.P(str(e))
+            ])
+            
+    return html.P("Click 'AI Stock Insights' to generate an analysis.")
 
 if __name__ == '__main__':
     app.run_server(debug=True)

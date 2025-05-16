@@ -8,12 +8,14 @@ A comprehensive tool for analyzing stocks, generating trading signals using mult
 - Traditional technical indicators (MACD, RSI, Bollinger Bands, VWAP, Fibonacci)
 - Machine learning-based prediction
 - Reinforcement learning trading agent
+- AI-powered insights using LangChain and Google's Gemini model
 
 ### Interactive Dashboard:
 - Real-time stock data visualization
 - Technical indicator overlays
 - Trading signal markers
 - Performance metrics
+- AI-powered stock insights with buy/sell recommendations
 
 ### Backtest Engine:
 - Simulate trading strategies
@@ -28,12 +30,35 @@ A comprehensive tool for analyzing stocks, generating trading signals using mult
 - VWAP
 - Fibonacci retracements
 
+### AI Stock Insights:
+- LLM-powered analysis using Google's Gemini model
+- Web search for latest news sentiment
+- Comprehensive buy/sell recommendations
+- Target price and timeframe projections
+- Entry/exit strategies and stop loss suggestions
+- Risk assessment
+- Detailed reasoning for recommendations
+
 ## Installation
 
 ### Requirements
 Ensure you have Python 3.8+ installed. Install the necessary dependencies using:
 ```sh
 pip install pandas numpy yfinance plotly dash dash-bootstrap-components scikit-learn gym stable-baselines3 matplotlib
+```
+
+For AI Stock Insights feature, install additional requirements:
+```sh
+pip install -r requirements_langchain.txt
+```
+
+### API Keys
+For the AI Stock Insights feature, you need a Google API key for the Gemini model:
+1. Get an API key from https://makersuite.google.com/app/apikey
+2. Copy the `.env.example` file to `.env` and add your API key:
+```sh
+cp .env.example .env
+# Edit .env and add your GOOGLE_API_KEY
 ```
 
 ## Usage
@@ -49,8 +74,13 @@ Navigate to [http://127.0.0.1:8050/](http://127.0.0.1:8050/) in your web browser
 ├── calculate_indicators.py    # Technical indicator calculation functions
 ├── generate_signals.py        # Trading signal generation strategies
 ├── backtest.py                # Backtesting engine for strategy evaluation
+├── stock_insights.py          # AI-powered stock analysis using LangChain and Gemini
+├── fundamentals_screener.py   # Fetch and analyze stock fundamentals
+├── get_data.py                # Data fetching utilities
 ├── utils.py                   # Utility functions shared across modules
 ├── models/                    # Directory for saved ML/RL models
+├── .env                       # Environment variables for API keys (create from .env.example)
+├── requirements_langchain.txt # Additional dependencies for AI features
 ```
 
 ## Trading Strategies

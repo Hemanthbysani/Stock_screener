@@ -92,3 +92,8 @@ ta==0.11.0
 tensorflow==2.18.0
 tensorflow-io-gcs-filesystem==0.37.1
 yfinance==0.2.52
+langchain
+langchain-google-genai
+langchain_community
+duckduckgo-search
+google-search-results
