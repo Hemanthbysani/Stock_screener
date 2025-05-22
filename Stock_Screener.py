@@ -370,22 +370,21 @@ def update_dashboard(n_clicks, ml_clicks, nifty_clicks, ticker, days, interval, 
     State('ticker-input', 'value')
 )
 def update_fundamentals(n_clicks, ticker):
-    ctx = dash.callback_context
-
-    if not ctx.triggered:
+    if n_clicks is None:
+        # This condition handles the initial callback run before the button is clicked.
+        # Return an empty string or dash.no_update to avoid updating the div.
         return ""
-    
-    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-    if triggered_id == 'fundamentals-btn':
-        fundamentals = fundamentals_screener(ticker)
-        if not fundamentals:
-            return html.P("No fundamental data available.")
-        content = []
-        for key, value in fundamentals.items():
-            content.append(html.P(f"{key}: {value}"))
-        return content
-    return ""
+    # If n_clicks is not None, the button has been pressed.
+    # Proceed to fetch and display fundamentals.
+    fundamentals = fundamentals_screener(ticker)
+    if not fundamentals:
+        return html.P("No fundamental data available.")
+    
+    content = []
+    for key, value in fundamentals.items():
+        content.append(html.P(f"{key}: {value}"))
+    return content
 
 @app.callback(
     Output('insights-div', 'children'),
